@@ -1,0 +1,2 @@
+echo This is a sample AI knowledge text file. > data\sample.txt
+LangChain is a framework for developing applications powered by large language models (LLMs).

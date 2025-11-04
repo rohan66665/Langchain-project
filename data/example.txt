@@ -1,0 +1,5 @@
+LangChain is a framework for developing applications powered by large language models (LLMs). 
+It helps developers connect LLMs with external data and build context-aware applications easily.
+RAG stands for Retrieval-Augmented Generation. 
+It combines a retriever model with a generator model (LLM) to give accurate and context-based answers.
+LLM means Large Language Model like GPT, LLaMA, etc.
