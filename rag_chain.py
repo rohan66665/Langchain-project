@@ -1,162 +1,193 @@
+# rag_chain.py
+# Paste this full file (replace your current rag_chain.py)
+# Works with your installed venv packages (langchain_groq, langchain_community FAISS, langchain_huggingface, groq)
+
 import os
-from typing import List, Tuple
-
+import json
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from typing import List
+
+# load installed wrappers
+try:
+    from langchain_groq import ChatGroq
+except Exception:
+    # If import fails, show clear error
+    raise ImportError("langchain_groq not found. Make sure your venv has langchain-groq / langchain_groq installed.")
+
+try:
+    from langchain_community.vectorstores import FAISS
+except Exception:
+    raise ImportError("langchain_community.vectorstores.FAISS not available. Install the correct langchain-community version.")
+
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+except Exception:
+    raise ImportError("langchain_huggingface HuggingFaceEmbeddings not available. Install langchain-huggingface.")
+
+try:
+    from langchain_core.prompts import PromptTemplate
+except Exception:
+    # Try alternative import path if needed
+    from langchain.prompts import PromptTemplate
 
 # -----------------------
-# Setup
+# Config & env
 # -----------------------
-load_dotenv()  # reads .env in project root
+load_dotenv()  # loads .env in project root
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "llama-3.1-8b-instant")
+VECTORSTORE_FOLDER = "vectorstore"
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+MEMORY_FILE = "memory.json"
 
 if not GROQ_API_KEY:
-    raise RuntimeError("GROQ_API_KEY missing in .env")
-if not MODEL_NAME:
-    raise RuntimeError("MODEL_NAME missing in .env")
+    raise RuntimeError("GROQ_API_KEY not set. Add it to .env (GROQ_API_KEY=...) and restart.")
 
-# LLM (no streaming — avoids older callback import paths)
+# -----------------------
+# Initialize LLM (Groq)
+# -----------------------
 llm = ChatGroq(
     model=MODEL_NAME,
     groq_api_key=GROQ_API_KEY,
-    temperature=0.5,
+    temperature=0.0,  # deterministic answers, change if you want creativity
+    streaming=False
 )
 
-# Vector store (created earlier by ingest.py)
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+# -----------------------
+# Load vectorstore & retriever
+# -----------------------
+embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+
+if not os.path.isdir(VECTORSTORE_FOLDER):
+    raise RuntimeError(f"Vectorstore folder not found: {VECTORSTORE_FOLDER}. Run ingest.py first.")
+
 vectorstore = FAISS.load_local(
-    folder_path="vectorstore",
+    folder_path=VECTORSTORE_FOLDER,
     embeddings=embeddings,
-    allow_dangerous_deserialization=True,
+    allow_dangerous_deserialization=True
 )
 
-# -----------------------
-# Hybrid RAG helpers
-# -----------------------
-def retrieve_with_scores(query: str, k: int = 4) -> List[Tuple[str, float]]:
-    """
-    Try to retrieve with scores. Falls back to plain retrieve if method not available.
-    Returns list of (text, score_or_distance). Lower distance is better for FAISS L2.
-    """
-    texts_scores: List[Tuple[str, float]] = []
-    try:
-        # FAISS usually supports similarity_search_with_score -> (Document, distance)
-        docs_scores = vectorstore.similarity_search_with_score(query, k=k)
-        for doc, score in docs_scores:
-            texts_scores.append((doc.page_content, float(score)))
-    except Exception:
-        # fallback: no explicit scores, just get docs
-        docs = vectorstore.similarity_search(query, k=k)
-        for d in docs:
-            texts_scores.append((d.page_content, 0.0))
-    return texts_scores
+# create retriever with reasonable defaults
+retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
-def pick_context(texts_scores: List[Tuple[str, float]]) -> str:
-    """
-    Heuristic: if we have scores (distances), keep those that look 'close'.
-    For FAISS L2, smaller = closer. Threshold is empirical; you can tune if needed.
-    If we don’t have meaningful scores, we still use the top-k.
-    """
-    if not texts_scores:
-        return ""
-    # Separate ones that came with real scores (distance > 0) vs 0.0 fallback
-    have_real_scores = any(s > 0 for _, s in texts_scores)
-    if have_real_scores:
-        # Keep items with distance <= 1.2 (tune if needed)
-        filtered = [t for t, s in texts_scores if s <= 1.2]
-        if filtered:
-            return "\n\n".join(filtered)
-        # If nothing passed threshold, treat as no reliable context
-        return ""
-    else:
-        # No scores available — just join top-k
-        return "\n\n".join(t for t, _ in texts_scores)
+# Safe helper to get documents from retriever (works across versions)
+def retrieve_docs(query: str):
+    # prefer high-level API if available
+    if hasattr(retriever, "get_relevant_documents"):
+        return retriever.get_relevant_documents(query)
+    # fallback name variations
+    if hasattr(retriever, "get_relevant_entries"):
+        return retriever.get_relevant_entries(query)
+    # last-resort: private method (some versions)
+    if hasattr(retriever, "_get_relevant_documents"):
+        # some versions require run_manager kw, pass None
+        try:
+            return retriever._get_relevant_documents(query)
+        except TypeError:
+            return retriever._get_relevant_documents(query, run_manager=None)
+    raise RuntimeError("Retriever object does not expose a known retrieval method.")
 
 # -----------------------
-# Prompt building (with memory)
+# Simple persistent memory
 # -----------------------
-SYSTEM_RAG = """You are a helpful AI assistant.
+def load_memory() -> List[dict]:
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, "r", encoding="utf8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
 
-You have two knowledge sources:
-1) Retrieved context (if provided) from the user's documents.
-2) Your own general knowledge.
+def save_memory(mem: List[dict]):
+    with open(MEMORY_FILE, "w", encoding="utf8") as f:
+        json.dump(mem, f, indent=2, ensure_ascii=False)
 
-RULES:
-- If context is present and relevant, use it and cite with: (from docs).
-- If context is empty or irrelevant, answer from general knowledge and say: (general).
-- Be concise, accurate, and helpful. If unsure, say you’re unsure.
-"""
+memory = load_memory()
 
-def build_prompt(chat_history: List[Tuple[str, str]], user_query: str, context: str) -> str:
-    # format the last few turns of history
-    history_str = ""
-    for u, a in chat_history[-5:]:
-        history_str += f"User: {u}\nAssistant: {a}\n"
+# -----------------------
+# Prompt template: uses context + conversation history
+# -----------------------
+template = """You are an assistant. Use ONLY the provided context & conversation to answer the user's question.
+Conversation history (most recent last):
+{history}
 
-    return f"""{SYSTEM_RAG}
-
-Chat history:
-{history_str if history_str.strip() else "(none)"}
-
-Retrieved context:
-{context if context.strip() else "(none)"}
+Context (retrieved docs):
+{context}
 
 User question:
-{user_query}
+{question}
 
-Assistant:
+Provide a concise answer and mention the sources briefly (if any).
 """
 
+prompt = PromptTemplate.from_template(template)
+
 # -----------------------
-# Main loop with memory
+# RAG query function
 # -----------------------
-def answer(chat_history: List[Tuple[str, str]], user_query: str) -> str:
+def rag_query(question: str) -> str:
     # 1) retrieve
-    texts_scores = retrieve_with_scores(user_query, k=4)
-    context = pick_context(texts_scores)
+    docs = retrieve_docs(question) or []
+    context = "\n\n".join([f"Source: {getattr(d, 'metadata', {}).get('source', '')}\n{d.page_content}" for d in docs])
 
-    # 2) build prompt with memory + context
-    prompt = build_prompt(chat_history, user_query, context)
+    # 2) build conversation history
+    hist_text = ""
+    for turn in memory[-10:]:  # keep last 10 for prompt
+        hist_text += f"User: {turn.get('user')}\nAssistant: {turn.get('assistant')}\n\n"
 
-    # 3) ask LLM
-    result = llm.invoke(prompt)
-    reply = result.content if hasattr(result, "content") else str(result)
+    # 3) format prompt
+    final_prompt = prompt.format(history=hist_text, context=context or "No context found.", question=question)
 
-    # 4) tag source
-    if context.strip():
-        reply += "\n\n(from docs)"
-    else:
-        reply += "\n\n(general)"
+    # 4) call LLM
+    response = llm.invoke(final_prompt)
 
-    return reply
+    # 5) extract text safely
+    text = getattr(response, "content", None) or getattr(response, "text", None) or str(response)
+
+    # 6) save to persistent memory (append)
+    memory.append({"user": question, "assistant": text})
+    # keep memory length reasonable
+    if len(memory) > 200:
+        memory[:] = memory[-200:]
+    save_memory(memory)
+
+    return text
+
+# -----------------------
+# CLI loop
+# -----------------------
+def main_cli():
+    print("✅ Smart RAG Chatbot is ready with memory!")
+    print("   Commands: 'clear' to reset memory, 'exit' to quit.\n")
+    while True:
+        query = input("🧠 Ask (or 'clear'/'exit'): ").strip()
+        if not query:
+            continue
+        if query.lower() == "exit":
+            break
+        if query.lower() == "clear":
+            memory.clear()
+            save_memory(memory)
+            print("Memory cleared.")
+            continue
+        try:
+            ans = rag_query(query)
+            print("\n💬 Answer:", ans, "\n")
+        except Exception as e:
+            print("Error during query:", str(e))
+
+# -----------------------
+# Optional: function to call from web server
+# -----------------------
+def answer_for_web(question: str) -> dict:
+    """Return JSON-friendly answer (for FastAPI etc.)."""
+    try:
+        txt = rag_query(question)
+        return {"answer": txt, "ok": True}
+    except Exception as e:
+        return {"answer": str(e), "ok": False}
 
 if __name__ == "__main__":
-    print("\n✅ Hybrid RAG Chatbot (Docs + General) with Memory is ready!")
-    print("   Commands: 'clear' to reset memory, 'exit' to quit.\n")
-
-    memory: List[Tuple[str, str]] = []  # list of (user, assistant)
-
-    while True:
-        try:
-            q = input("🧠 Ask (or 'clear'/'exit'): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nBye!")
-            break
-
-        if not q:
-            continue
-        if q.lower() in ("exit", "quit"):
-            print("👋 Bye!")
-            break
-        if q.lower() == "clear":
-            memory.clear()
-            print("🧹 Memory cleared.\n")
-            continue
-
-        ans = answer(memory, q)
-        print("\n💬 Answer:", ans, "\n")
-        memory.append((q, ans))
+    main_cli()
