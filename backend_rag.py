@@ -1,21 +1,11 @@
 import os
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain.chains import ConversationalRetrievalChain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains import create_retrieval_chain
-from langchain_community.chat_models import ChatGroq
-
-# example setup:
-retriever = vectorstore.as_retriever()
-llm = ChatGroq(groq_api_key=os.getenv("GROQ_API_KEY"), model="llama-3.1-8b-instant")
-combine_chain = create_stuff_documents_chain(llm)
-chain = create_retrieval_chain(retriever, combine_chain)
-
 
 # ✅ Load environment variables
 load_dotenv()
@@ -29,23 +19,28 @@ if not GROQ_API_KEY:
 # ✅ Initialize embeddings (lightweight, no torch GPU needed)
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# ✅ Vector database setup
+# ✅ Load or index PDF documents
 def load_and_index_pdf(pdf_path="docs/sample.pdf"):
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"❌ PDF file not found: {pdf_path}")
+    
     loader = PyPDFLoader(pdf_path)
     docs = loader.load()
+
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = splitter.split_documents(docs)
+
     vectorstore = FAISS.from_documents(chunks, embeddings)
     vectorstore.save_local("vectorstore")
     return vectorstore
 
-# ✅ Load vectorstore if already created
+
+# ✅ Retrieve existing or new FAISS vectorstore
 def get_vectorstore():
     if os.path.exists("vectorstore"):
         return FAISS.load_local("vectorstore", embeddings, allow_dangerous_deserialization=True)
     return load_and_index_pdf()
+
 
 # ✅ Initialize Groq model
 llm = ChatGroq(
@@ -54,19 +49,21 @@ llm = ChatGroq(
     temperature=0.3
 )
 
-# ✅ Create RAG chain
+# ✅ Build Conversational Retrieval Chain (RAG system)
 qa_chain = ConversationalRetrievalChain.from_llm(
     llm=llm,
     retriever=get_vectorstore().as_retriever()
 )
 
-# ✅ Chat function
+# ✅ Maintain chat history
 chat_history = []
 
+# ✅ Chat function
 def chat(query):
     global chat_history
     if not query.strip():
         return "⚠️ Please enter a question."
+    
     result = qa_chain.invoke({"question": query, "chat_history": chat_history})
     chat_history.append((query, result["answer"]))
     return result["answer"]
