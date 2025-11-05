@@ -1,11 +1,11 @@
-# Ignore sensitive files
+# env & cache
 .env
-memory.json
-vectorstore/
+.venv/
 __pycache__/
 *.pyc
-.vscode/
-*.log
 
-.env
-.env
+# data
+docs/
+vectorstore/
+*.pkl
+*.db
