@@ -1,24 +1,28 @@
-# 🧠 LangChain RAG Chatbot (Groq + FAISS + FastAPI)
+# 🧠 LangChain RAG Chatbot (Groq + FastAPI + FAISS)
 
-This project is a **Retrieval-Augmented Generation (RAG)** based chatbot built using:
+A powerful Retrieval-Augmented Generation (RAG) chatbot using:
+
 - **LangChain**
 - **Groq LLM (Llama 3.1 - 8B Instant)**
 - **FAISS Vector Store**
 - **HuggingFace Embeddings**
-- **FastAPI for backend**
-- **HTML + JS frontend (Chat UI)**
+- **FastAPI (Backend API)**
+- **HTML + JavaScript Chat UI**
+- **Memory (Conversation History Stored)**
 
 ---
 
-## ⚙️ Features
-✅ PDF / Text ingestion and embedding (via `ingest.py`)  
-✅ FAISS vector search for context retrieval  
-✅ RAG-based LLM responses with memory (persistent `memory.json`)  
-✅ FastAPI-powered backend  
-✅ Simple HTML/JS chat UI (frontend)  
-✅ Secure environment variables using `.env`  
-✅ Ready for deployment on **Render / Vercel**
+## ✅ Features
+
+✔ Loads your `.txt` / `.pdf` file using `ingest.py`  
+✔ Stores embeddings using **FAISS** (local vector DB)  
+✔ Answers questions using **RAG + LLM**  
+✔ Remembers chat using `memory.json`  
+✔ FastAPI endpoint → `/chat`  
+✔ Frontend + Backend fully connected  
+✔ `.env` file used → secure API keys (not in GitHub)
 
 ---
 
-## 🧩 Folder Structure
+## 📁 Project Structure
+
