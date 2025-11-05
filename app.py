@@ -1,36 +1,24 @@
-import os
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI
 from pydantic import BaseModel
-from dotenv import load_dotenv
+from backend_rag import chat, load_document, reset_memory
 
-from backend_rag import chat, reset_memory
+app = FastAPI()
 
-load_dotenv()
+class Query(BaseModel):
+    question: str
 
-app = FastAPI(title="RAG + Memory Chat")
-
-# static + templates
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-class ChatIn(BaseModel):
-    message: str
-    reset: bool | None = False
-
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+class Doc(BaseModel):
+    text: str
 
 @app.post("/chat")
-async def chat_api(payload: ChatIn):
-    try:
-        if payload.reset:
-            reset_memory()
-            return JSONResponse({"answer": "Memory cleared.", "sources": []})
-        result = chat(payload.message)
-        return JSONResponse(result)
-    except Exception as e:
-        return JSONResponse({"answer": f"Error: {e}", "sources": []}, status_code=500)
+def ask_question(data: Query):
+    return {"response": chat(data.question)}
+
+@app.post("/upload")
+def upload_docs(data: Doc):
+    load_document(data.text)
+    return {"message": "Document uploaded and processed ✅"}
+
+@app.post("/reset")
+def clear_memory():
+    return {"message": reset_memory()}
