@@ -1,51 +1,68 @@
 import os
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
-from langchain_groq import ChatGroq
 from dotenv import load_dotenv
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
+from langchain.chains import ConversationalRetrievalChain
 
+# ✅ Load environment variables
 load_dotenv()
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME", "llama-3.1-8b-instant")
+
+if not GROQ_API_KEY:
+    raise ValueError("❌ GROQ_API_KEY not found. Please add it in Render → Environment Variables")
+
+# ✅ Initialize embeddings (lightweight, no torch GPU needed)
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+# ✅ Vector database setup
+def load_and_index_pdf(pdf_path="docs/sample.pdf"):
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"❌ PDF file not found: {pdf_path}")
+    loader = PyPDFLoader(pdf_path)
+    docs = loader.load()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    chunks = splitter.split_documents(docs)
+    vectorstore = FAISS.from_documents(chunks, embeddings)
+    vectorstore.save_local("vectorstore")
+    return vectorstore
+
+# ✅ Load vectorstore if already created
+def get_vectorstore():
+    if os.path.exists("vectorstore"):
+        return FAISS.load_local("vectorstore", embeddings, allow_dangerous_deserialization=True)
+    return load_and_index_pdf()
+
+# ✅ Initialize Groq model
+llm = ChatGroq(
+    api_key=GROQ_API_KEY,
+    model=MODEL_NAME,
+    temperature=0.3
 )
 
-if os.path.exists("faiss_index"):
-    vector_store = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-else:
-    vector_store = None
+# ✅ Create RAG chain
+qa_chain = ConversationalRetrievalChain.from_llm(
+    llm=llm,
+    retriever=get_vectorstore().as_retriever()
+)
 
-def load_document(text: str):
-    global vector_store
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-    docs = [Document(page_content=chunk) for chunk in splitter.split_text(text)]
-    
-    vector_store = FAISS.from_documents(docs, embeddings)
-    vector_store.save_local("faiss_index")
+# ✅ Chat function
+chat_history = []
 
-def chat(query: str):
-    global vector_store
-    if vector_store is None:
-        return "⚠ Please upload documents first."
+def chat(query):
+    global chat_history
+    if not query.strip():
+        return "⚠️ Please enter a question."
+    result = qa_chain.invoke({"question": query, "chat_history": chat_history})
+    chat_history.append((query, result["answer"]))
+    return result["answer"]
 
-    docs = vector_store.similarity_search(query, k=3)
-    context = "\n\n".join([d.page_content for d in docs])
-    
-    llm = ChatGroq(
-        api_key=os.getenv("GROQ_API_KEY"),
-        model="mixtral-8x7b-32768"
-    )
-    
-    prompt = f"Answer based on the context.\n\nContext:\n{context}\n\nUser: {query}\n\nAnswer:"
-    response = llm.invoke(prompt)
-    return response
-
+# ✅ Reset memory
 def reset_memory():
-    global vector_store
-    vector_store = None
-    if os.path.exists("faiss_index"):
-        import shutil
-        shutil.rmtree("faiss_index")
-    return "Memory cleared ✅"
+    global chat_history
+    chat_history = []
+    return "🧠 Chat memory cleared!"
