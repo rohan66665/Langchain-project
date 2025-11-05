@@ -5,8 +5,17 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
-from langchain_community.chains import ConversationalRetrievalChain
 from langchain.chains import ConversationalRetrievalChain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains import create_retrieval_chain
+from langchain_community.chat_models import ChatGroq
+
+# example setup:
+retriever = vectorstore.as_retriever()
+llm = ChatGroq(groq_api_key=os.getenv("GROQ_API_KEY"), model="llama-3.1-8b-instant")
+combine_chain = create_stuff_documents_chain(llm)
+chain = create_retrieval_chain(retriever, combine_chain)
+
 
 # ✅ Load environment variables
 load_dotenv()
